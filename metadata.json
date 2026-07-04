@@ -1,0 +1,6 @@
+{
+  "name": "Document Portal",
+  "description": "An elegant portal for admins to upload and manage Word and PDF documents in Supabase Storage, and for the public to search, view, and download them.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
