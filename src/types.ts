@@ -13,4 +13,5 @@ export interface DocumentItem {
 export interface ConfigStatus {
   supabaseConfigured: boolean;
   supabaseUrl: string | null;
+  supabaseError?: string | null;
 }

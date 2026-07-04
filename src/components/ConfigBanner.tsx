@@ -11,28 +11,41 @@ export default function ConfigBanner({ status }: ConfigBannerProps) {
 
   if (!status) return null;
 
+  const hasError = !!status.supabaseError;
+  const isConfigured = status.supabaseConfigured && !hasError;
+
+  let bgClass = "border-amber-950/80 bg-amber-950/20 text-amber-200";
+  let iconBgClass = "p-2 bg-amber-950/80 rounded-lg text-amber-400 mt-0.5 animate-pulse border border-amber-800/50";
+  let btnClass = "border-amber-800 hover:bg-amber-900/40 text-amber-300";
+
+  if (hasError) {
+    bgClass = "border-rose-950 bg-rose-950/25 text-rose-200";
+    iconBgClass = "p-2 bg-rose-950/80 rounded-lg text-rose-400 mt-0.5 border border-rose-900/50";
+    btnClass = "border-rose-800 hover:bg-rose-900/40 text-rose-300";
+  } else if (isConfigured) {
+    bgClass = "border-emerald-950 bg-emerald-950/20 text-emerald-200";
+    iconBgClass = "p-2 bg-emerald-950/80 rounded-lg text-emerald-400 mt-0.5 border border-emerald-800/50";
+    btnClass = "border-emerald-800 hover:bg-emerald-900/40 text-emerald-300";
+  }
+
   return (
-    <div
-      className={`mb-6 rounded-xl border p-4 transition-all duration-300 ${
-        status.supabaseConfigured
-          ? "border-emerald-950 bg-emerald-950/20 text-emerald-200"
-          : "border-amber-950/80 bg-amber-950/20 text-amber-200"
-      }`}
-    >
+    <div className={`mb-6 rounded-xl border p-4 transition-all duration-300 ${bgClass}`}>
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div className="flex items-start gap-3">
-          {status.supabaseConfigured ? (
-            <div className="p-2 bg-emerald-950/80 rounded-lg text-emerald-400 mt-0.5 border border-emerald-800/50">
+          {isConfigured ? (
+            <div className={iconBgClass}>
               <CheckCircle2 className="h-5 w-5" />
             </div>
           ) : (
-            <div className="p-2 bg-amber-950/80 rounded-lg text-amber-400 mt-0.5 animate-pulse border border-amber-800/50">
+            <div className={iconBgClass}>
               <AlertTriangle className="h-5 w-5" />
             </div>
           )}
           <div>
             <div className="font-semibold flex items-center gap-2 text-zinc-100">
-              {status.supabaseConfigured ? (
+              {hasError ? (
+                <span className="text-rose-400">Supabase Connection Error</span>
+              ) : isConfigured ? (
                 <>
                   <span>Connected to Supabase Storage</span>
                   <span className="inline-flex h-2 w-2 rounded-full bg-emerald-500"></span>
@@ -42,7 +55,9 @@ export default function ConfigBanner({ status }: ConfigBannerProps) {
               )}
             </div>
             <p className="text-sm text-zinc-300 mt-0.5 opacity-90">
-              {status.supabaseConfigured
+              {hasError
+                ? `Credentials configured, but connection failed: ${status.supabaseError}. Operating in demo fallback mode.`
+                : isConfigured
                 ? `Files are being securely uploaded to and served from ${status.supabaseUrl}`
                 : "Credentials are not configured in AI Studio secrets. Files are simulated locally in memory."}
             </p>
@@ -51,11 +66,7 @@ export default function ConfigBanner({ status }: ConfigBannerProps) {
 
         <button
           onClick={() => setIsOpen(!isOpen)}
-          className={`flex items-center gap-1.5 text-xs font-medium px-3.5 py-2 rounded-lg border transition-all ${
-            status.supabaseConfigured
-              ? "border-emerald-800 hover:bg-emerald-900/40 text-emerald-300"
-              : "border-amber-800 hover:bg-amber-900/40 text-amber-300"
-          }`}
+          className={`flex items-center gap-1.5 text-xs font-medium px-3.5 py-2 rounded-lg border transition-all ${btnClass}`}
         >
           <Database className="h-3.5 w-3.5" />
           <span>{isOpen ? "Hide Setup Info" : "Setup Instructions"}</span>

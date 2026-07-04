@@ -55,30 +55,105 @@ process.on("unhandledRejection", (reason) => {
   console.error("Unhandled Rejection:", reason);
 });
 
-// Helper: Check if Supabase configuration is present
-function isSupabaseConfigured(): boolean {
-  const url = process.env.SUPABASE_URL;
-  const anonKey = process.env.SUPABASE_ANON_KEY;
-  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+// Global Supabase Connection/Key validation error tracker
+let supabaseConnectionError: string | null = null;
 
-  return (
+// Helper to clean and sanitize environment variables (removes quotes, trailing spaces/newlines, carriage returns, etc.)
+function cleanEnvVar(val: string | undefined): string | null {
+  if (!val) return null;
+  let cleaned = val.toString().trim();
+  
+  // Strip out any surrounding whitespace, tabs, carriage returns, or newlines
+  cleaned = cleaned.replace(/^[\s\r\n]+|[\s\r\n]+$/g, "");
+  
+  // Recursively strip out any surrounding single or double quotes
+  while (
+    (cleaned.startsWith('"') && cleaned.endsWith('"')) ||
+    (cleaned.startsWith("'") && cleaned.endsWith("'")) ||
+    (cleaned.startsWith("`") && cleaned.endsWith("`"))
+  ) {
+    cleaned = cleaned.slice(1, -1).trim();
+  }
+  
+  // Clean potential backslashed quotes from some terminal exports
+  cleaned = cleaned.replace(/\\"/g, '"').replace(/\\'/g, "'");
+  
+  // Re-strip just in case
+  cleaned = cleaned.trim();
+  
+  return cleaned || null;
+}
+
+// Get cleaned and validated configuration
+function getCleanedSupabaseConfig() {
+  const url = cleanEnvVar(process.env.SUPABASE_URL);
+  const anonKey = cleanEnvVar(process.env.SUPABASE_ANON_KEY);
+  const serviceKey = cleanEnvVar(process.env.SUPABASE_SERVICE_ROLE_KEY);
+
+  const isConfigured =
     !!url &&
     url !== "https://your-project.supabase.co" &&
     !!anonKey &&
     anonKey !== "your-supabase-anon-key" &&
     !!serviceKey &&
-    serviceKey !== "your-supabase-service-role-key"
-  );
+    serviceKey !== "your-supabase-service-role-key";
+
+  return {
+    isConfigured,
+    url,
+    anonKey,
+    serviceKey,
+  };
+}
+
+// Validate Supabase keys for common formatting/pasting errors (Invalid Compact JWS)
+function validateSupabaseKeys(): string | null {
+  const config = getCleanedSupabaseConfig();
+  if (!config.isConfigured) {
+    return null; // Not configured at all
+  }
+  
+  if (!config.url!.startsWith("http://") && !config.url!.startsWith("https://")) {
+    return "SUPABASE_URL is malformed. It must start with http:// or https://";
+  }
+
+  const validateJwt = (key: string, name: string): string | null => {
+    const parts = key.split(".");
+    if (parts.length !== 3) {
+      return `${name} is malformed (has ${parts.length} parts instead of 3). A valid Supabase JWT key must have three parts separated by dots. Check if it was truncated when pasting.`;
+    }
+    if (!key.startsWith("eyJ")) {
+      return `${name} is invalid. Standard Supabase API keys are JWT tokens starting with 'eyJ'.`;
+    }
+    if (key.length < 50) {
+      return `${name} is too short. It should be a long base64-encoded token.`;
+    }
+    return null;
+  };
+
+  const anonErr = validateJwt(config.anonKey!, "SUPABASE_ANON_KEY");
+  if (anonErr) return anonErr;
+
+  const serviceErr = validateJwt(config.serviceKey!, "SUPABASE_SERVICE_ROLE_KEY");
+  if (serviceErr) return serviceErr;
+
+  return null;
+}
+
+// Helper: Check if Supabase configuration is present
+function isSupabaseConfigured(): boolean {
+  return getCleanedSupabaseConfig().isConfigured;
 }
 
 // Lazy-initialize Supabase client
 function getSupabaseClient() {
-  if (!isSupabaseConfigured()) {
+  const config = getCleanedSupabaseConfig();
+  if (!config.isConfigured) {
     return null;
   }
   return createClient(
-    process.env.SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY! // Use service key for server-side operations
+    config.url!,
+    config.serviceKey! // Use service key for server-side operations
   );
 }
 
@@ -106,10 +181,41 @@ function authenticateAdmin(req: express.Request, res: express.Response, next: ex
 // --- API ROUTES ---
 
 // 1. Get configuration status
-app.get("/api/config-status", (req, res) => {
+app.get("/api/config-status", async (req, res) => {
+  const validationError = validateSupabaseKeys();
+  if (validationError) {
+    supabaseConnectionError = validationError;
+  } else if (isSupabaseConfigured()) {
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      try {
+        const { data: buckets, error: bucketsError } = await supabase.storage.listBuckets();
+        if (bucketsError) {
+          console.error("Error listing buckets on config-status check:", bucketsError);
+          // If the error is JWT-related, make it highly actionable
+          const errMsg = bucketsError.message || "";
+          if (errMsg.includes("Invalid Compact JWS") || errMsg.includes("invalid JWT") || errMsg.includes("JWS") || errMsg.includes("JWT")) {
+            supabaseConnectionError = "The Service Role API key is invalid (Invalid Compact JWS). Please check your SUPABASE_SERVICE_ROLE_KEY inside Secrets. Ensure it's copied completely from Supabase Dashboard -> Settings -> API, with 3 dot-separated parts, and contains no wrapping quotes.";
+          } else {
+            supabaseConnectionError = bucketsError.message || "Invalid credentials / connection error";
+          }
+        } else {
+          // Connection succeeded, reset error
+          supabaseConnectionError = null;
+        }
+      } catch (e: any) {
+        console.error("Exception listing buckets on config-status check:", e);
+        supabaseConnectionError = e?.message || "Connection exception";
+      }
+    }
+  } else {
+    supabaseConnectionError = null;
+  }
+
   res.json({
-    supabaseConfigured: isSupabaseConfigured(),
-    supabaseUrl: isSupabaseConfigured() ? process.env.SUPABASE_URL : null,
+    supabaseConfigured: isSupabaseConfigured() && !supabaseConnectionError,
+    supabaseUrl: getCleanedSupabaseConfig().url,
+    supabaseError: supabaseConnectionError,
   });
 });
 
@@ -140,8 +246,14 @@ app.post("/api/admin/logout", (req, res) => {
 // 4. Fetch documents (public searchable list)
 app.get("/api/documents", async (req, res) => {
   try {
+    const validationError = validateSupabaseKeys();
+    if (validationError) {
+      supabaseConnectionError = validationError;
+      return res.json(localDocuments);
+    }
+
     const supabase = getSupabaseClient();
-    if (!supabase) {
+    if (!supabase || supabaseConnectionError) {
       // Return local documents in demo/fallback mode
       return res.json(localDocuments);
     }
@@ -153,8 +265,18 @@ app.get("/api/documents", async (req, res) => {
     const { data: buckets, error: bucketsError } = await supabase.storage.listBuckets();
     if (bucketsError) {
       console.error("Error listing buckets:", bucketsError);
-      return res.status(500).json({ error: "Supabase connection error: " + bucketsError.message });
+      const errMsg = bucketsError.message || "";
+      if (errMsg.includes("Invalid Compact JWS") || errMsg.includes("invalid JWT") || errMsg.includes("JWS") || errMsg.includes("JWT")) {
+        supabaseConnectionError = "The Service Role API key is invalid (Invalid Compact JWS). Please check your SUPABASE_SERVICE_ROLE_KEY inside Secrets.";
+      } else {
+        supabaseConnectionError = errMsg || "Invalid credentials / connection error";
+      }
+      // Return local documents in demo/fallback mode on error
+      return res.json(localDocuments);
     }
+
+    // Reset error if listing buckets succeeded
+    supabaseConnectionError = null;
 
     const bucketExists = buckets?.some((b) => b.name === bucketName);
     if (!bucketExists) {
@@ -165,10 +287,8 @@ app.get("/api/documents", async (req, res) => {
       });
       if (createError) {
         console.warn("Failed to auto-create bucket 'documents':", createError.message);
-        // It might be because of policy permissions, we'll suggest creating it manually
-        return res.status(500).json({
-          error: `The Storage Bucket '${bucketName}' does not exist in your Supabase project. Please create it in the Supabase Dashboard and set its public policy to public.`,
-        });
+        supabaseConnectionError = createError.message;
+        return res.json(localDocuments);
       }
     }
 
@@ -183,7 +303,8 @@ app.get("/api/documents", async (req, res) => {
         return res.json([]);
       }
       console.error("Error downloading metadata.json:", downloadError);
-      return res.status(500).json({ error: "Failed to load documents metadata from Storage: " + downloadError.message });
+      supabaseConnectionError = downloadError.message;
+      return res.json(localDocuments);
     }
 
     const text = await fileData.text();
@@ -215,6 +336,10 @@ app.post("/api/admin/upload", authenticateAdmin, upload.single("file"), async (r
     const uniqueFileName = `${timestamp}_${sanitizedFileName}`;
 
     const supabase = getSupabaseClient();
+    if (supabase && supabaseConnectionError) {
+      return res.status(400).json({ error: `Supabase connection error: ${supabaseConnectionError}. Verify your keys in secrets.` });
+    }
+
     if (!supabase) {
       // Demo fallback mode: Save file in localDocuments in-memory list
       // Generate a mock download URL or object URL
@@ -305,6 +430,10 @@ app.delete("/api/admin/documents/:id", authenticateAdmin, async (req, res) => {
   try {
     const { id } = req.params;
     const supabase = getSupabaseClient();
+
+    if (supabase && supabaseConnectionError) {
+      return res.status(400).json({ error: `Supabase connection error: ${supabaseConnectionError}. Verify your keys in secrets.` });
+    }
 
     if (!supabase) {
       // Demo fallback mode
